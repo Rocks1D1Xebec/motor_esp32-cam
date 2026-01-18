@@ -1,65 +1,131 @@
-import cv2                #para manejar las imágenes y la ventana de video
-import mediapipe as mp    #inteligencia artificial de Google para detectar manos
-import requests           #para pedir las fotos/videos del esp
-import numpy as np        #sirve para convertir los datos brutos de la foto en números que entienda Python
+import cv2  # Importamos OpenCV, sirve para mostrar la imagen de la cámara, dibujar líneas, texto y trabajar con imágenes en general
+import mediapipe as mp  #librería para detección de manos
+import requests  #para pedir la imagen de la camara y enviarle datos al motor
+import numpy as np  #para manejar imágenes como listas de números
+import math  #mas funciones matematicas
 
-mp_hands = mp.solutions.hands               # Accedemos a la herramienta específica de "Manos" dentro de MediaPipe
-mp_dibujo = mp.solutions.drawing_utils      # Accedemos a la herramienta para "Dibujar" los palitos y puntos
+# link para pedir la imagen de la cámara y enviarle datos al motor
+url_cam = "http://192.168.0.14/cam.jpg"
+url_motor = "http://192.168.0.14/control"
 
-# Configuramos cómo va a comportarse el detector
+# El verdadero juntos(0.2) y separado(1.2)
+DISTANCIA_MIN = 0.2
+DISTANCIA_MAX = 1.2
+
+mp_hands = mp.solutions.hands  # Aqui accedemos al modulo de deteccion de manos
+mp_dibujo = mp.solutions.drawing_utils  # Esto nos permite dibujar los puntos y líneas de la mano en pantalla
+
+# Creamos el detector de manos
 manos = mp_hands.Hands(
-    static_image_mode=False,      # false para videos y true para una sola foto
-    max_num_hands=1,              # le decimos que solo busque UNA mano
-    min_detection_confidence=0.7, # Tiene que estar al 70% seguro de que es una mano para marcarla.
-    min_tracking_confidence=0.7   # Tiene que estar al 70% seguro para seguir el movimiento de los dedos.
+    static_image_mode=False,  # False significa que es como un video, no solo una foto
+    max_num_hands=1,  # Solo detecta una mano para evitar confusión
+    min_detection_confidence=0.7,  # Qué tan seguro debe estar para decir “esto es una mano”
+    min_tracking_confidence=0.7  # Qué tan seguro debe estar para seguir la mano mientras se mueve
 )
 
-url_cam = "http://10.76.73.52/cam.jpg"
-
-# Bucle principal
+# Este while hace que el programa nunca se detenga
 while True:
     try:
-        # Le pedimos la imagen con un tiempo de espera máximo de 1 segundo para que no se trabe
-        respuesta = requests.get(url_cam, timeout=1) 
-        
-        # Los datos llegan como bytes (ceros y unos) los convertimos a un arreglo de números
+        # Pedimos una imagen a la ESP32-CAM
+        respuesta = requests.get(url_cam, timeout=1)
+
+        # la imagen llega en bytes y los convertimos en un array de numeros para que se puedo procesar la imagen 
         img_array = np.array(bytearray(respuesta.content), dtype=np.uint8)
-        
-        # Decodificamos ese arreglo binario para crear una imagen real que OpenCV pueda entender
+
+        # Convertimos esos números en una imagen real
         frame = cv2.imdecode(img_array, -1)
 
-        # Si por alguna razón la imagen llegó vacía saltamos al siguiente intento(volvemos al principio del while)
+        # Si la imagen llegó mal, volvemos a intentar
         if frame is None:
             continue
 
-        #0 para voltear la imagen verticalmente
+        # Volteamos la imagen para que se vea como espejo
         frame = cv2.flip(frame, 0)
 
-        #de blanco a negro lo cambiamos para que sea a color
+        alto, ancho, _ = frame.shape# alto = qué tan alta es la imagen, ancho = qué tan ancha es la imagen, _ = colores (no lo usamos(si lo borras no hay ventana del cv2(no me preguntes porque porque no entendi la explicacion de la ia xd)))
+
+        # Convertimos la imagen de BGR(blanco y negro) a RGB(colores) porque MediaPipe solo entiende RGB
         frame_rgb = cv2.cvtColor(frame, cv2.COLOR_BGR2RGB)
-        
-        # Le enviamos la imagen a MediaPipe para que busque manos
+
+        # MediaPipe analiza la imagen buscando una mano
         resultado = manos.process(frame_rgb)
 
-        # si hay una mano
+        # Si MediaPipe encontró una mano
         if resultado.multi_hand_landmarks:
-            # Recorremos las manos encontradas (aunque configuramos solo 1)
             for mano_puntos in resultado.multi_hand_landmarks:
-                # dibuja los puntos rojos y las líneas blancas sobre tu mano
-                mp_dibujo.draw_landmarks(frame, mano_puntos, mp_hands.HAND_CONNECTIONS)
+                
+                # Guardamos puntos importantes de la mano
+                p4 = mano_puntos.landmark[4]  # Punta del pulgar
+                p8 = mano_puntos.landmark[8]  # Punta del dedo índice
+                p0 = mano_puntos.landmark[0]  # Muñeca
+                p9 = mano_puntos.landmark[9]  # Base del dedo medio
+                # obtnemos las coordenadas en píxeles
+                x4, y4 = int(p4.x * ancho), int(p4.y * alto)
+                x8, y8 = int(p8.x * ancho), int(p8.y * alto)
 
-        # Abre una ventana con el título Monitor Camara y muestra frama(la variable que guarda la imagen)
-        cv2.imshow("Monitor Camara - Solo Deteccion", frame)
+                # Calculamos la distancia entre el pulgar y el índice
+                dist_dedos = math.hypot(x8 - x4, y8 - y4)
 
-    #Si se desconecta el wifi la imagen en la pantalla se queda en lo ultimo y se vuelve al princio del buble
-    except Exception:
-        pass
+                # Calculamos el tamaño de la mano como referencia, para que no afecte si esta cerca o lejos
+                dist_ref = math.hypot(p9.x * ancho - p0.x * ancho, p9.y * alto - p0.y * alto)
 
-    # Si presionamos la tecla 'q', rompemos el bucle y cerramos todo
+                # Normalizamos la distancia para quefuncione igual aunque la mano esté cerca o lejos
+                medida_normalizada = dist_dedos / dist_ref
+
+                # Convertimos el gesto en un numero entre 0 y 255
+                potencia = (
+                    (medida_normalizada - DISTANCIA_MIN)
+                    * 255
+                    / (DISTANCIA_MAX - DISTANCIA_MIN)
+                )
+
+                # Aseguramos que el valor no se salga del rango
+                potencia_final = int(np.clip(potencia, 0, 255))
+
+                try:
+                    # Enviamos la potencia al ESP32 por internet
+                    requests.get(
+                        f"{url_motor}?potencia={potencia_final}",
+                        timeout=0.1
+                    )
+                except:
+                    # Si falla el envío, el programa sigue funcionando
+                    pass
+
+                # Dibujamos una línea entre pulgar e índice
+                cv2.line(frame, (x4, y4), (x8, y8), (0, 255, 0), 3)
+
+                # Mostramos el valor del motor en la imagen
+                cv2.putText(
+                    frame,
+                    f"Motor: {potencia_final}",
+                    (50, 50),
+                    cv2.FONT_HERSHEY_SIMPLEX,
+                    1,
+                    (0, 255, 255),
+                    2
+                )
+
+                # Dibujamos todos los puntos y líneas de la mano
+                mp_dibujo.draw_landmarks(
+                    frame,
+                    mano_puntos,
+                    mp_hands.HAND_CONNECTIONS
+                )
+
+        # Mostramos la imagen en una ventana
+        cv2.imshow("Control Gestual de Motor", frame)
+
+    except Exception as e:
+        # Si ocurre un error grave, lo mostramos en la consola
+        print(f"Error en el sistema: {e}")
+
+    # Si se presiona la tecla "q", se cierra el programa
     if cv2.waitKey(1) & 0xFF == ord('q'):
         break
 
-# Al terminar, cerramos todas las ventanas abiertas
+# Cerramos todas las ventanas
 cv2.destroyAllWindows()
-# Cerramos el detector de manos para liberar memoria
+
+# Liberamos el detector de manos
 manos.close()
