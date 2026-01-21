@@ -9,8 +9,7 @@ url_cam = "http://192.168.4.1/cam.jpg"
 url_motor = "http://192.168.4.1/control"
 
 # El verdadero juntos(0.2) y separado(1.2)
-DISTANCIA_MIN = 0.2
-DISTANCIA_MAX = 1.2
+mar_d_error = 0.2
 
 mp_hands = mp.solutions.hands  # Aqui accedemos al modulo de deteccion de manos
 mp_dibujo = mp.solutions.drawing_utils  # Esto nos permite dibujar los puntos y líneas de la mano en pantalla
@@ -42,7 +41,7 @@ while True:
         # Volteamos la imagen para que se vea como espejo
         frame = cv2.flip(frame, 0)
 
-        alto, ancho, _ = frame.shape# alto = qué tan alta es la imagen, ancho = qué tan ancha es la imagen, _ = colores (no lo usamos(si lo borras no hay ventana del cv2(no me preguntes porque porque no entendi la explicacion de la ia xd)))
+        alto, ancho, _ = frame.shape # alto = qué tan alta es la imagen, ancho = qué tan ancha es la imagen, _ = colores
 
         # Convertimos la imagen de BGR(blanco y negro) a RGB(colores) porque MediaPipe solo entiende RGB
         frame_rgb = cv2.cvtColor(frame, cv2.COLOR_BGR2RGB)
@@ -53,35 +52,20 @@ while True:
         # Si MediaPipe encontró una mano
         if resultado.multi_hand_landmarks:
             for mano_puntos in resultado.multi_hand_landmarks:
-                
-                # Guardamos puntos importantes de la mano
+
                 p4 = mano_puntos.landmark[4]  # Punta del pulgar
                 p8 = mano_puntos.landmark[8]  # Punta del dedo índice
-                p0 = mano_puntos.landmark[0]  # Muñeca
                 p9 = mano_puntos.landmark[9]  # Base del dedo medio
-                # obtnemos las coordenadas en píxeles
-                x4, y4 = int(p4.x * ancho), int(p4.y * alto)
-                x8, y8 = int(p8.x * ancho), int(p8.y * alto)
+                p0 = mano_puntos.landmark[0]  # Muñeca
 
-                # Calculamos la distancia entre el pulgar y el índice
-                dist_dedos = math.hypot(x8 - x4, y8 - y4)
+                # Calculo de la distancia entre el pulgar e indice y la base del dedo medio con la muñeca
+                dist_dedos_dec = math.hypot(p8.x - p4.x, p8.y - p4.y)
+                dist_ref_dec = math.hypot(p9.x - p0.x, p9.y - p0.y)
 
-                # Calculamos el tamaño de la mano como referencia, para que no afecte si esta cerca o lejos
-                dist_ref = math.hypot(p9.x * ancho - p0.x * ancho, p9.y * alto - p0.y * alto)
-
-                # Normalizamos la distancia para quefuncione igual aunque la mano esté cerca o lejos
-                medida_normalizada = dist_dedos / dist_ref
-
-                # Convertimos el gesto en un numero entre 0 y 255
-                potencia = (
-                    (medida_normalizada - DISTANCIA_MIN)
-                    * 255
-                    / (DISTANCIA_MAX - DISTANCIA_MIN)
-                )
-
-                # Aseguramos que el valor no se salga del rango
-                potencia_final = int(np.clip(potencia, 0, 255))
-
+                # Normalizamos la distancia para que funcione igual aunque la mano esté cerca o lejos
+                medida_normalizada = dist_dedos_dec / dist_ref_dec
+                potencia = (medida_normalizada - mar_d_error) * 255
+                potencia_final = int(np.clip(potencia, 0, 255))# establecemos limites al valor
                 try:
                     # Enviamos la potencia al ESP32 por internet
                     requests.get(
@@ -91,6 +75,10 @@ while True:
                 except:
                     # Si falla el envío, el programa sigue funcionando
                     pass
+
+                # Obtenemos las coordenadas en píxeles para el dibujo
+                x4, y4 = int(p4.x * ancho), int(p4.y * alto)
+                x8, y8 = int(p8.x * ancho), int(p8.y * alto)
 
                 # Dibujamos una línea entre pulgar e índice
                 cv2.line(frame, (x4, y4), (x8, y8), (0, 255, 0), 3)
@@ -107,11 +95,7 @@ while True:
                 )
 
                 # Dibujamos todos los puntos y líneas de la mano
-                mp_dibujo.draw_landmarks(
-                    frame,
-                    mano_puntos,
-                    mp_hands.HAND_CONNECTIONS
-                )
+                mp_dibujo.draw_landmarks(frame, mano_puntos, mp_hands.HAND_CONNECTIONS)
 
         # Mostramos la imagen en una ventana
         cv2.imshow("Control Gestual de Motor", frame)
@@ -124,8 +108,6 @@ while True:
     if cv2.waitKey(1) & 0xFF == ord('q'):
         break
 
-# Cerramos todas las ventanas
+# Cerramos todas las ventanas, cerramos el detector de manos
 cv2.destroyAllWindows()
-
-# Liberamos el detector de manos
 manos.close()
