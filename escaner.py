@@ -5,8 +5,8 @@ import numpy as np  #para manejar imágenes como listas de números
 import math  #mas funciones matematicas
 
 # link para pedir la imagen de la cámara y enviarle datos al motor
-url_cam = "http://192.168.0.14/cam.jpg"
-url_motor = "http://192.168.0.14/control"
+url_cam = "http://192.168.4.1/cam.jpg"
+url_motor = "http://192.168.4.1/control"
 
 # El verdadero juntos(0.2) y separado(1.2)
 DISTANCIA_MIN = 0.2

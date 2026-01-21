@@ -1,86 +1,92 @@
-//ESTE CODIGO LO DEBEN PEGAR EN EL ARDUINO IDE
-#include <WebServer.h>//server
-#include <WiFi.h>//conectarse a wifi
-#include <esp32cam.h>//control de camara
+#include <WebServer.h>   // Crea el servidor
+#include <WiFi.h>        // Permite controlar las funciones de red
+#include <esp32cam.h>    // Para controlar la camara
 
-const char* Nombre = "Nyls";
+// Estos serán ahora el nombre y la clave de la red que el ESP32 va a crear
+const char* Nombre = "Rocks";       
 const char* Contraseña = "sombras199";
 
-//---configuracion del motor---
-const int pinMotor = 12;      //pin para el motor
-const int frecuencia = 5000;  //velocidad de la señal
-const int resolucion = 8;     //resolucion de 0 a 255 (8 bits)
+const int pinFlash = 4;    // El LED 
+const int resolucion = 8;  // Usamos 8 bits, lo que nos da un rango de 0 a 255 para el brillo
 
-WebServer server(80);
+WebServer server(80); // Creamos el servidor en el puerto 80 (el estándar para internet)
 
-static auto fixedRes = esp32cam::Resolution::find(320, 240); //dimensiones de la imagen
+// Configuramos que la imagen sea de 800x600 (según tu ajuste fijo)
+static auto fixedRes = esp32cam::Resolution::find(800, 600);
 
+// Esta función se encarga de sacar la foto y mandarla a tu computadora
 void serveJpg() {
-  auto frame = esp32cam::capture();//captura imgen
-  if (frame == nullptr) {
-    Serial.println("Error al capturar img");
-    server.send(503, "", "");
+  auto frame = esp32cam::capture(); // Captura una foto en este instante
+  if (frame == nullptr) {           // Si la cámara falla y no hay foto...
+    Serial.println("Error al capturar imagen"); // Avisa por el monitor serial
+    server.send(503, "", "");       // Envía un error al navegador
     return;
   }
-  server.setContentLength(frame->size());//cuanto pesa la imagen
-  server.send(200, "image/jpeg");//indica que es una imgen jpeg
-  WiFiClient client = server.client();//identifica al cliente 
-  frame->writeTo(client);//envia la img
+  // Si la foto está bien, le decimos al navegador cuánto mide y qué tipo de imagen es
+  server.setContentLength(frame->size());
+  server.send(200, "image/jpeg");
+  WiFiClient client = server.client(); // Prepara el envío de datos
+  frame->writeTo(client);               // Envía la foto bit por bit a la computadora
 }
 
-void manejarControl() {
-  if (server.hasArg("potencia")) { //revisa si llego el dato potencia
-    String valorTexto = server.arg("potencia");//guarda el texto recibido
-    int valorPotencia = valorTexto.toInt();//lo convierte a numero
-    valorPotencia = constrain(valorPotencia, 0, 255);//asegura rango de 0 a 255
-    //Ahora escribimos directamente al PIN, no al canal
-    ledcWrite(pinMotor, valorPotencia); //manda la potencia al pin 12
+// Esta función recibe el dato "brillo" que mandas desde Python según tus dedos
+void manejarControlFlash() {
+  if (server.hasArg("brillo")) {          // Recibe el valor en texto
+    String valorTexto = server.arg("brillo"); // Guarda el valor que llegó 
+    int nivelBrillo = valorTexto.toInt(); // Convierte ese texto en un número real
     
-    server.send(200, "text/plain", "ok");//responde al python
+    // El comando constrain asegura que el número nunca sea menor a 0 ni mayor a 255
+    nivelBrillo = constrain(nivelBrillo, 0, 255);
+    
+    // ledcWrite aplica físicamente el voltaje al LED para que brille más o menos
+    ledcWrite(pinFlash, nivelBrillo); 
+    
+    // Respondemos a Python que ya hicimos el cambio para que no se quede esperando
+    server.send(200, "text/plain", "Nivel de brillo actualizado");
   }
 }
 
 void setup() {
-  Serial.begin(115200);
+  Serial.begin(115200); // Iniciamos la comunicación con la computadora
   Serial.println();
 
+  //configuracion de la camara
   {
     using namespace esp32cam; 
-    Config cfg;               
-    cfg.setPins(pins::AiThinker);//configura los pines automatico
-    cfg.setResolution(fixedRes);//aplica el tamaño de la imagen
-    cfg.setBufferCount(2);//2 espacios para captura
-    cfg.setJpeg(80); // Calidad de imagen
-    bool ok = Camera.begin(cfg);//inicia la camara
-    Serial.println(ok ? "Inicio exitoso" : "Inicio fallido");
+    Config cfg; 
+    cfg.setPins(pins::AiThinker); // Le dice a la placa que es el modelo AI-Thinker
+    cfg.setResolution(fixedRes);  // Aplica el tamaño de imagen
+    cfg.setBufferCount(2);        // Crea dos espacios de memoria para que el video sea fluido
+    cfg.setJpeg(80);              // Calidad de la imagen (50 de 100)
+    bool ok = Camera.begin(cfg);  // Intenta encender la cámara
+    Serial.println(ok ? "Cámara lista" : "Error al iniciar cámara");
   }
 
-  //---NUEVA FORMA DE CONFIGURAR EL MOTOR (ESP32 V3.0)---
-  // Esta sola linea reemplaza a ledcSetup y ledcAttachPin
-  ledcAttach(pinMotor, frecuencia, resolucion); //conecta el pin con su config
+  // Configuramos el pin del Flash con una frecuencia de 5000Hz (para que no parpadee)
+  ledcAttach(pinFlash, 5000, resolucion);
 
-  WiFi.persistent(false);//mantiene los datos solo en ram
-  WiFi.mode(WIFI_STA);//conectarse al wifi
-  WiFi.begin(Nombre, Contraseña);//usa los datos de red
+  // crea su propia red wifi
+  WiFi.mode(WIFI_AP); // Cambiamos a modo "Punto de Acceso" (la placa crea su red)
   
-  while (WiFi.status() != WL_CONNECTED) {
-    delay(500);
-    Serial.print(".");
-  }
+  // Creamos la red con el nombre y contraseña definidos arriba
+  // Si todo sale bien, la placa empezará a emitir señal Wi-Fi
+  WiFi.softAP(Nombre, Contraseña); 
 
-  Serial.println("\nWiFi Conectado");
-  Serial.print("URL camara: http://");
-  Serial.print(WiFi.localIP());
-  Serial.println("/cam.jpg");
-  Serial.print("URL Motor: http://");
-  Serial.print(WiFi.localIP());
-  Serial.println("/control"); // Link para probar el motor
+  Serial.println("Iniciando punto de acceso...");
+  Serial.print("Nombre de la red (SSID): ");
+  Serial.println(Nombre);
   
-  server.on("/cam.jpg", serveJpg);//ruta para la imagen
-  server.on("/control", manejarControl);//ruta para motor
-  server.begin();//inicia el server
+  // Obtenemos la IP que el ESP32 se asignó a sí mismo como jefe de la red
+  // Por defecto suele ser 192.168.4.1
+  Serial.print("Dirección IP para conectar desde Python: ");
+  Serial.println(WiFi.softAPIP());
+  
+  server.on("/cam.jpg", serveJpg);           // Si entras a /cam.jpg, ejecuta la función de la foto
+  server.on("/control", manejarControlFlash); // Si entras a /control, ejecuta la función del brillo
+  server.begin();                            // Enciende el servidor finalmente
 }
 
 void loop() {
-  server.handleClient();//procesa peticiones
+  server.handleClient(); // Revisa todo el tiempo si Python le está mandando algo
+  delay(100);
 }
