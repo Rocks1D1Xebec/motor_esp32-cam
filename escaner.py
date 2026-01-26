@@ -1,85 +1,104 @@
-import cv2  # Importamos OpenCV para manejar la cámara y el video
-import mediapipe as mp  # Librería de Google para detectar manos
-import requests  # Para pedir la imagen y enviar la potencia por Wi-Fi
-import numpy as np  # Para manejar las imágenes como si fueran tablas de números
-import math  # Para hacer cálculos de distancias entre dedos
+import cv2 # Herramienta para usar la cámara
+import mediapipe as mp # Herramienta para reconocer manos
+import serial # Herramienta para enviar datos por el cable USB
+import numpy as np # Herramienta para hacer cálculos de números
+import math # Herramienta para matemáticas (como medir distancias)
+import time # Herramienta para manejar el tiempo
 
-# Direcciones para hablar con las placas. Nota: Cambia la IP del motor por la real.
-url_cam = "http://192.168.4.1/cam.jpg"
-url_motor = "http://192.168.4.2/motor" 
+# 1. Configuramos la "dirección" de nuestro ESP32 y la velocidad de charla
+PUERTO = "COM4"
+BAUDIOS = 115200
 
-# Margen para que el motor no gire si los dedos están casi juntos
-mar_d_error = 0.2
+try:
+    # Intentamos abrir la línea de comunicación con el ESP32
+    esp = serial.Serial(PUERTO, BAUDIOS, timeout=1)
+    time.sleep(2) # Esperamos 2 segundos para que el ESP32 "despierte" bien
+    print("¡Conectado con éxito!")
+except:
+    # Si algo sale mal (cable suelto, puerto errado), avisamos aquí
+    print("No encontré el ESP32. Revisa el cable.")
 
-mp_hands = mp.solutions.hands  # Accedemos a las herramientas de manos
-mp_dibujo = mp.solutions.drawing_utils  # Herramienta para dibujar puntos en los dedos
-
-# Configuramos el detector de manos
+# 2. Preparamos al "detective" de manos (MediaPipe)
+mp_hands = mp.solutions.hands
+mp_dibujo = mp.solutions.drawing_utils
 manos = mp_hands.Hands(
-    static_image_mode=False, # Procesamos como video fluido
-    max_num_hands=1, # Solo nos importa una mano
-    min_detection_confidence=0.7, # 70% de seguridad de que es una mano
-    min_tracking_confidence=0.7 # 70% de seguridad al seguir el movimiento
+    static_image_mode=False, # Decimos que es un video, no una foto fija
+    max_num_hands=1,         # Solo nos interesa rastrear una mano
+    min_detection_confidence=0.7, # Qué tan seguro debe estar de que es una mano
+    min_tracking_confidence=0.7   # Qué tan bien debe seguir el movimiento
 )
 
-while True:
+# 3. Encendemos la cámara de la computadora
+cap = cv2.VideoCapture(0)
+mar_d_error = 0.2  # Un pequeño margen para que el motor se apague si los dedos están casi juntos
+
+while True: # Este ciclo se repite sin parar
     try:
-        # 1. PEDIR FOTO: Le pedimos la imagen actual a la ESP32-CAM
-        respuesta = requests.get(url_cam, timeout=1)
-        # Convertimos los datos crudos en una imagen que Python entienda
-        img_array = np.array(bytearray(respuesta.content), dtype=np.uint8)
-        frame = cv2.imdecode(img_array, -1)
+        # La cámara toma una foto
+        ret, frame = cap.read()
+        if not ret: continue
 
-        if frame is None: continue # Si la foto falló, saltamos al siguiente intento
-
-        frame = cv2.flip(frame, 1) # Volteamos la imagen para que sea como un espejo
-        alto, ancho, _ = frame.shape # Obtenemos el tamaño de la foto
-
-        # MediaPipe necesita los colores en orden RGB, pero OpenCV los da en BGR. Los cambiamos:
+        # Volteamos la imagen para que funcione como un espejo
+        frame = cv2.flip(frame, 1)
+        alto, ancho, _ = frame.shape
+        # Cambiamos los colores para que la Inteligencia Artificial los entienda mejor
         frame_rgb = cv2.cvtColor(frame, cv2.COLOR_BGR2RGB)
-        resultado = manos.process(frame_rgb) # ¡Aquí ocurre la magia! Se detecta la mano
 
-        if resultado.multi_hand_landmarks: # Si se detectó al menos una mano
+        # Le pedimos al detective que busque manos en la foto
+        resultado = manos.process(frame_rgb)
+
+        # Si el detective encontró una mano...
+        if resultado.multi_hand_landmarks:
             for mano_puntos in resultado.multi_hand_landmarks:
-                # Obtenemos la ubicación de 4 puntos clave (coordenadas X y Y)
-                p4 = mano_puntos.landmark[4]  # Punta del pulgar
-                p8 = mano_puntos.landmark[8]  # Punta del índice
-                p9 = mano_puntos.landmark[9]  # Base del dedo medio (para referencia)
-                p0 = mano_puntos.landmark[0]  # Muñeca (para referencia)
+                
+                # Identificamos puntos clave: punta del pulgar (4) e índice (8)
+                p4 = mano_puntos.landmark[4]  
+                p8 = mano_puntos.landmark[8]  
+                # Puntos de referencia para saber qué tan grande es la mano en pantalla
+                p9 = mano_puntos.landmark[9]  
+                p0 = mano_puntos.landmark[0]  
 
-                # Calculamos la distancia entre pulgar e índice
-                dist_dedos = math.hypot(p8.x - p4.x, p8.y - p4.y)
-                # Calculamos el tamaño de la mano (para que no importe si la alejas o acercas)
-                dist_ref = math.hypot(p9.x - p0.x, p9.y - p0.y)
+                # Medimos la distancia actual entre los dedos pulgar e índice
+                dist_dedos_dec = math.hypot(p8.x - p4.x, p8.y - p4.y)
+                
+                # Medimos el tamaño de la mano para que no importe si la alejas de la cámara
+                dist_ref_dec = math.hypot(p9.x - p0.x, p9.y - p0.y)
+                
+                # Calculamos un valor de apertura (0 = cerrado, 1 = abierto)
+                medida_normalizada = dist_dedos_dec / dist_ref_dec
+                
+                # Convertimos esa apertura en un número para el motor (entre 0 y 255)
+                potencia_final = int(np.clip((medida_normalizada - mar_d_error) * 255, 0, 255))
 
-                # Convertimos la distancia en un número de 0 a 255 para el motor
-                medida_normalizada = dist_dedos / dist_ref
-                potencia = (medida_normalizada - mar_d_error) * 255
-                potencia_final = int(np.clip(potencia, 0, 255)) # Aseguramos que esté entre 0 y 255
+                # --- MOMENTO CLAVE: Creamos el mensaje "M:número" y lo enviamos ---
+                mensaje = f"M:{potencia_final}\n"
+                esp.write(mensaje.encode())
 
-                try:
-                    # 2. ENVIAR POTENCIA: Le mandamos el número a la placa del motor
-                    requests.get(f"{url_motor}?valor={potencia_final}", timeout=0.05)
-                except:
-                    pass # Si falla un envío, no pasa nada, el bucle sigue
-
-                # Dibujamos líneas y texto en la pantalla para ver qué está pasando
+                # Dibujamos un círculo y líneas en la pantalla para ver qué está pasando
                 x4, y4 = int(p4.x * ancho), int(p4.y * alto)
                 x8, y8 = int(p8.x * ancho), int(p8.y * alto)
-                cv2.line(frame, (x4, y4), (x8, y8), (0, 255, 0), 3) # Línea verde entre dedos
+
+                # Dibujamos una línea verde entre los dedos
+                cv2.line(frame, (x4, y4), (x8, y8), (0, 255, 0), 3)
+                # Escribimos la potencia en la esquina de la pantalla
                 cv2.putText(frame, f"Motor: {potencia_final}", (50, 50), 
-                            cv2.FONT_HERSHEY_SIMPLEX, 1, (0, 255, 255), 2)
-                
-                # Dibujamos los puntos y conexiones de la mano (esqueleto)
+                            cv2.FONT_HERSHEY_SIMPLEX, 1, (0, 255, 0), 2)
+
+                # Dibujamos todos los puntos de la mano detectada
                 mp_dibujo.draw_landmarks(frame, mano_puntos, mp_hands.HAND_CONNECTIONS)
 
-        cv2.imshow("Control por Gestos", frame) # Mostramos la ventana con el video
+        # Mostramos la ventana con todo lo que dibujamos
+        cv2.imshow("Control Gestual", frame)
 
     except Exception as e:
-        print(f"Error: {e}") # Si algo falla, lo escribimos en consola
+        print(f"Algo falló: {e}")
 
-    if cv2.waitKey(1) & 0xFF == ord('q'): # Si presionas 'q', el programa se cierra
+    # Si presionas la tecla 'q', el programa se detiene
+    if cv2.waitKey(1) & 0xFF == ord('q'):
         break
 
-cv2.destroyAllWindows() # Limpiamos las ventanas al salir
-manos.close() # Apagamos el detector de manos
+# Al terminar, soltamos la cámara y cerramos el cable USB
+cap.release()
+esp.close()
+cv2.destroyAllWindows()
+manos.close()

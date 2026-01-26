@@ -1,43 +1,26 @@
-#include <WiFi.h>      // Librería para conectarse al Wi-Fi de la cámara
-#include <WebServer.h> // Librería para recibir órdenes desde Python
-
-// Datos de la red creada por la cámara para poder unirnos
-const char* ssid = "RED_ROBOT";
-const char* password = "12345678";
-
-const int pinMotor = 13;      // Pin donde conectaremos el cable del motor
-const int frecuenciaPWM = 1000; // Rapidez con la que parpadea la energía (1000 veces por segundo)
-const int resolucionPWM = 8;   // Usamos una escala de 0 a 255 para la potencia
-
-WebServer server(80); // Servidor para recibir las órdenes de Python
-
-// Esta función recibe el valor de potencia y lo aplica al motor
-void recibirPotencia() {
-  if (server.hasArg("valor")) { // Si en la orden viene el dato "valor"
-    int potencia = server.arg("valor").toInt(); // Convertimos el texto a número
-    potencia = constrain(potencia, 0, 255);     // Nos aseguramos que no pase de 255
-    ledcWrite(pinMotor, potencia);              // Le damos la orden al pin de mover el motor
-    server.send(200, "text/plain", "OK");       // Respondemos que todo salió bien
-  }
-}
+const int pinMotor = 14;      // 1. Elegimos el "enchufe" (pin) número 14 para conectar el motor
+const int frecuencia = 1000;  // 2. Definimos qué tan rápido va a parpadear la energía para controlar la fuerza
+const int resolucion = 8;   // 3. Decidimos que usaremos una regla del 0 al 255 para medir la potencia
 
 void setup() {
-  Serial.begin(115200);
-
-  // Configuramos el pin del motor para que pueda variar su fuerza (PWM)
-  ledcAttach(pinMotor, frecuenciaPWM, resolucionPWM);
-  ledcWrite(pinMotor, 0); // Empezamos con el motor apagado
-
-  WiFi.begin(ssid, password); // Intentamos conectarnos a la red de la cámara
-  while (WiFi.status() != WL_CONNECTED) { // Mientras no se conecte...
-    delay(500);
-    Serial.print("."); // Imprimimos puntos para saber que sigue intentando
-  }
-
-  server.on("/motor", recibirPotencia); // Si Python dice "/motor", ejecutamos la función
-  server.begin(); // Iniciamos el servidor
+  Serial.begin(115200);   // Abrimos una línea de comunicación para que el ESP32 pueda "hablar" con la PC
+  ledcAttach(pinMotor, frecuencia, resolucion);   // Le avisamos al pin 14 que se prepare para enviar ráfagas de energía (PWM)
 }
-
 void loop() {
-  server.handleClient(); // El ESP32 espera las órdenes de Python constantemente
+  if (Serial.available()) {// Preguntamos constantemente: "¿Ha llegado algún mensaje por el cable USB?"
+    String data = Serial.readStringUntil('\n');// Guardamos lo que nos escribieron
+    
+    // Si el mensaje comienza con la letra "M" de Motor...
+    if (data.startsWith("M:")) {
+      
+      // Quitamos la "M:" y convertimos el texto restante en un número real
+      int valor = data.substring(2).toInt();
+      
+      // Si el número es menor a 0 o mayor a 255, lo ajustamos para que no se pase
+      valor = constrain(valor, 0, 255);
+      
+      // Finalmente, le entregamos esa cantidad exacta de energía al motor
+      ledcWrite(pinMotor, valor); 
+    } 
+  }
 }
